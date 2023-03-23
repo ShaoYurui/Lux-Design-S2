@@ -3,6 +3,8 @@ from lux.config import EnvConfig
 from lux.utils import direction_to, my_turn_to_place_factory
 import numpy as np
 import sys
+
+
 class Agent():
     def __init__(self, player: str, env_cfg: EnvConfig) -> None:
         self.player = player
@@ -35,7 +37,7 @@ class Agent():
 
     def act(self, step: int, obs, remainingOverageTime: int = 60):
         actions = dict()
-        
+
         """
         optionally do forward simulation to simulate positions of units, lichen, etc. in the future
         from lux.forward_sim import forward_sim
@@ -45,37 +47,81 @@ class Agent():
 
         game_state = obs_to_game_state(step, self.env_cfg, obs)
         factories = game_state.factories[self.player]
-        game_state.teams[self.player].place_first
+        units = game_state.units[self.player]
+
         factory_tiles, factory_units = [], []
         for unit_id, factory in factories.items():
             if factory.power >= self.env_cfg.ROBOTS["HEAVY"].POWER_COST and \
-            factory.cargo.metal >= self.env_cfg.ROBOTS["HEAVY"].METAL_COST:
+                    factory.cargo.metal >= self.env_cfg.ROBOTS["HEAVY"].METAL_COST and \
+                    len(units) == 0:
                 actions[unit_id] = factory.build_heavy()
+
+            if factory.power >= self.env_cfg.ROBOTS["LIGHT"].POWER_COST and \
+                    factory.cargo.metal >= self.env_cfg.ROBOTS["LIGHT"].METAL_COST and \
+                    len(units) == 4:
+                actions[unit_id] = factory.build_light()
+
             if factory.water_cost(game_state) <= factory.cargo.water / 5 - 200:
                 actions[unit_id] = factory.water()
             factory_tiles += [factory.pos]
             factory_units += [factory]
         factory_tiles = np.array(factory_tiles)
 
-        units = game_state.units[self.player]
+        heavy_bot_tiles = []
+        heavy_bot_units = []
+        for unit_id, unit in units.items():
+            if unit.unit_type == "HEAVY":
+                heavy_bot_tiles += [unit.pos]
+                heavy_bot_units += [unit]
+        heavy_bot_tiles = np.array(heavy_bot_tiles)
+
+        light_bot_tiles = []
+        light_bot_units = []
+        for unit_id, unit in units.items():
+            if unit.unit_type == "LIGHT":
+                light_bot_tiles += [unit.pos]
+                light_bot_units += [unit]
+        light_bot_tiles = np.array(light_bot_tiles)
+
         ice_map = game_state.board.ice
         ice_tile_locations = np.argwhere(ice_map == 1)
-        for unit_id, unit in units.items():
+        ore_map = game_state.board.ore
+        ore_tile_locations = np.argwhere(ore_map == 1)
 
+        for index, items in enumerate(units.items()):
+            unit_id, unit = items
+            # print(unit.unit_type, file = sys.stderr)
             # track the closest factory
             closest_factory = None
             adjacent_to_factory = False
-            if len(factory_tiles) > 0:
+            adjacent_to_light_bot = False
+            adjacent_to_heavy_bot = False
+            done_transfer = False
+            if len(factory_tiles) > 0 and unit.unit_type == "HEAVY":
                 factory_distances = np.mean((factory_tiles - unit.pos) ** 2, 1)
                 closest_factory_tile = factory_tiles[np.argmin(factory_distances)]
                 closest_factory = factory_units[np.argmin(factory_distances)]
                 adjacent_to_factory = np.mean((closest_factory_tile - unit.pos) ** 2) == 0
 
+                if len(light_bot_tiles) > 0:
+                    light_bot_distances = np.mean((light_bot_tiles - unit.pos) ** 2, 1)
+                    closest_light_bot_tile = light_bot_tiles[np.argmin(light_bot_distances)]
+                    closest_light_bot = light_bot_units[np.argmin(light_bot_distances)]
+                    adjacent_to_light_bot = np.mean((closest_light_bot_tile - unit.pos) ** 2) == 0.5
+
                 # previous ice mining code
-                if unit.cargo.ice < 40:
-                    ice_tile_distances = np.mean((ice_tile_locations - unit.pos) ** 2, 1)
-                    closest_ice_tile = ice_tile_locations[np.argmin(ice_tile_distances)]
-                    if np.all(closest_ice_tile == unit.pos):
+                ice_tile_distances = np.mean((ice_tile_locations - unit.pos) ** 2, 1)
+                closest_ice_tile = ice_tile_locations[np.argmin(ice_tile_distances)]
+                if unit.cargo.ice != 0 and adjacent_to_light_bot and closest_light_bot.cargo.ice == 0:
+                    actions[unit_id] = [unit.transfer(direction_to(unit.pos, closest_light_bot_tile), 0,
+                                                      40,
+                                                      repeat=0, n=1)]
+
+                if np.all(closest_ice_tile == unit.pos):
+                    if unit.power >= unit.dig_cost(game_state) + unit.action_queue_cost(game_state):
+                        actions[unit_id] = [unit.dig(repeat=0, n=1)]
+                else:
+                    if game_state.board.rubble[unit.pos[0]][unit.pos[1]] != 0:
                         if unit.power >= unit.dig_cost(game_state) + unit.action_queue_cost(game_state):
                             actions[unit_id] = [unit.dig(repeat=0, n=1)]
                     else:
@@ -83,14 +129,50 @@ class Agent():
                         move_cost = unit.move_cost(game_state, direction)
                         if move_cost is not None and unit.power >= move_cost + unit.action_queue_cost(game_state):
                             actions[unit_id] = [unit.move(direction, repeat=0, n=1)]
-                # else if we have enough ice, we go back to the factory and dump it.
-                elif unit.cargo.ice >= 40:
+                heavy_bot_tile = unit.pos
+
+            if len(factory_tiles) > 0 and unit.unit_type == "LIGHT":
+                heavy_bot_distances = np.mean((heavy_bot_tiles - unit.pos) ** 2, 1)
+                closest_heavy_bot_tile = heavy_bot_tiles[np.argmin(heavy_bot_distances)]
+                closest_heavy_bot = heavy_bot_units[np.argmin(heavy_bot_distances)]
+                adjacent_to_heavy_bot = np.mean((closest_heavy_bot_tile - unit.pos) ** 2) == 0.5
+
+                factory_distances = np.mean((factory_tiles - unit.pos) ** 2, 1)
+                closest_factory_tile = factory_tiles[np.argmin(factory_distances)]
+                closest_factory = factory_units[np.argmin(factory_distances)]
+                adjacent_to_factory = np.mean((closest_factory_tile - unit.pos) ** 2) == 0
+
+                if len(heavy_bot_tiles) > 0:
                     direction = direction_to(unit.pos, closest_factory_tile)
-                    if adjacent_to_factory:
-                        if unit.power >= unit.action_queue_cost(game_state):
-                            actions[unit_id] = [unit.transfer(direction, 0, unit.cargo.ice, repeat=0)]
-                    else:
+                    move_cost = unit.move_cost(game_state, direction)
+
+                    if (move_cost is not None) and (
+                            unit.power > (move_cost + unit.action_queue_cost(game_state))+ 10) and (
+                            not adjacent_to_heavy_bot) and unit.cargo.ice == 0:
+                        direction = direction_to(unit.pos, closest_heavy_bot_tile)
+                        move_cost = unit.move_cost(game_state, direction)
+                        actions[unit_id] = [unit.move(direction, repeat=0, n=1)]
+
+                    elif (move_cost is not None) and (unit.power <= (
+                            move_cost + unit.action_queue_cost(game_state) + 10 )) and not adjacent_to_factory:
+                        direction = direction_to(unit.pos, closest_factory_tile)
                         move_cost = unit.move_cost(game_state, direction)
                         if move_cost is not None and unit.power >= move_cost + unit.action_queue_cost(game_state):
                             actions[unit_id] = [unit.move(direction, repeat=0, n=1)]
+
+                    elif adjacent_to_heavy_bot and \
+                            ((closest_heavy_bot.unit_id in actions.keys() and (
+                            np.all(actions[closest_heavy_bot.unit_id][0] == unit.dig(repeat=0, n=1)))) or
+                             closest_heavy_bot.unit_id not in actions.keys()):
+                        actions[unit_id] = [unit.transfer(direction_to(unit.pos, closest_heavy_bot_tile), 4,
+                                                          (unit.power - move_cost - unit.action_queue_cost(game_state) - 10),
+                                                          repeat=0, n=1)]
+                    elif adjacent_to_factory and unit.power <= 40:
+                        actions[unit_id] = [unit.pickup(4, 100-unit.power, repeat=0, n=1)]
+                    elif adjacent_to_factory and unit.cargo.ice != 0 :
+                        actions[unit_id] = [unit.transfer(direction_to(unit.pos, closest_factory_tile), 0,
+                                                          unit.cargo.ice,
+                                                          repeat=0, n=1)]
+
+
         return actions
