@@ -49,24 +49,6 @@ class Agent():
         factories = game_state.factories[self.player]
         units = game_state.units[self.player]
 
-        factory_tiles, factory_units = [], []
-        for unit_id, factory in factories.items():
-            if factory.power >= self.env_cfg.ROBOTS["HEAVY"].POWER_COST and \
-                    factory.cargo.metal >= self.env_cfg.ROBOTS["HEAVY"].METAL_COST and \
-                    len(units) == 0:
-                actions[unit_id] = factory.build_heavy()
-
-            if factory.power >= self.env_cfg.ROBOTS["LIGHT"].POWER_COST and \
-                    factory.cargo.metal >= self.env_cfg.ROBOTS["LIGHT"].METAL_COST and \
-                    len(units) == 4:
-                actions[unit_id] = factory.build_light()
-
-            if factory.water_cost(game_state) <= factory.cargo.water / 5 - 200:
-                actions[unit_id] = factory.water()
-            factory_tiles += [factory.pos]
-            factory_units += [factory]
-        factory_tiles = np.array(factory_tiles)
-
         heavy_bot_tiles = []
         heavy_bot_units = []
         for unit_id, unit in units.items():
@@ -82,6 +64,28 @@ class Agent():
                 light_bot_tiles += [unit.pos]
                 light_bot_units += [unit]
         light_bot_tiles = np.array(light_bot_tiles)
+
+        factory_tiles = []
+        factory_units = []
+        for unit_id, unit in factories.items():
+            factory_tiles += [unit.pos]
+            factory_units += [unit]
+        factory_tiles = np.array(factory_tiles)
+
+        for unit_id, factory in factories.items():
+            if factory.power >= self.env_cfg.ROBOTS["HEAVY"].POWER_COST and \
+                    factory.cargo.metal >= self.env_cfg.ROBOTS["HEAVY"].METAL_COST and \
+                    len(heavy_bot_units) == 0:
+                actions[unit_id] = factory.build_heavy()
+            if factory.power >= self.env_cfg.ROBOTS["LIGHT"].POWER_COST and \
+                    factory.cargo.metal >= self.env_cfg.ROBOTS["LIGHT"].METAL_COST and \
+                    len(light_bot_units) == 0 and len(heavy_bot_units) != 0 and not is_occupied(heavy_bot_tiles,light_bot_tiles,factory.pos):
+                actions[unit_id] = factory.build_light()
+
+            if factory.water_cost(game_state) <= factory.cargo.water / 5 - 200:
+                actions[unit_id] = factory.water()
+
+
 
         ice_map = game_state.board.ice
         ice_tile_locations = np.argwhere(ice_map == 1)
@@ -113,10 +117,14 @@ class Agent():
                 ice_tile_distances = np.mean((ice_tile_locations - unit.pos) ** 2, 1)
                 closest_ice_tile = ice_tile_locations[np.argmin(ice_tile_distances)]
                 if unit.cargo.ice != 0 and adjacent_to_light_bot and closest_light_bot.cargo.ice == 0:
-                    actions[unit_id] = [unit.transfer(direction_to(unit.pos, closest_light_bot_tile), 0,
-                                                      40,
-                                                      repeat=0, n=1)]
-
+                    if unit.cargo.ice < 100:
+                        actions[unit_id] = [unit.transfer(direction_to(unit.pos, closest_light_bot_tile), 0,
+                                                          unit.cargo.ice,
+                                                          repeat=0, n=1)]
+                    else:
+                        actions[unit_id] = [unit.transfer(direction_to(unit.pos, closest_light_bot_tile), 0,
+                                                          100,
+                                                          repeat=0, n=1)]
                 if np.all(closest_ice_tile == unit.pos):
                     if unit.power >= unit.dig_cost(game_state) + unit.action_queue_cost(game_state):
                         actions[unit_id] = [unit.dig(repeat=0, n=1)]
@@ -129,9 +137,14 @@ class Agent():
                         move_cost = unit.move_cost(game_state, direction)
                         if move_cost is not None and unit.power >= move_cost + unit.action_queue_cost(game_state):
                             actions[unit_id] = [unit.move(direction, repeat=0, n=1)]
-                heavy_bot_tile = unit.pos
+
+                if adjacent_to_factory and unit.power != 1500:
+                    actions[unit_id] = [unit.pickup(4, 1500 - unit.power, repeat=0, n=1)]
 
             if len(factory_tiles) > 0 and unit.unit_type == "LIGHT":
+                ice_tile_distances = np.mean((ice_tile_locations - unit.pos) ** 2, 1)
+                closest_ice_tile = ice_tile_locations[np.argmin(ice_tile_distances)]
+
                 heavy_bot_distances = np.mean((heavy_bot_tiles - unit.pos) ** 2, 1)
                 closest_heavy_bot_tile = heavy_bot_tiles[np.argmin(heavy_bot_distances)]
                 closest_heavy_bot = heavy_bot_units[np.argmin(heavy_bot_distances)]
@@ -146,15 +159,18 @@ class Agent():
                     direction = direction_to(unit.pos, closest_factory_tile)
                     move_cost = unit.move_cost(game_state, direction)
 
-                    if (move_cost is not None) and (
-                            unit.power > (move_cost + unit.action_queue_cost(game_state))+ 10) and (
+                    if adjacent_to_factory and unit.power <= 140:
+                        actions[unit_id] = [unit.pickup(4, 150-unit.power, repeat=0, n=1)]
+                    elif (move_cost is not None) and (
+                            unit.power > (move_cost + unit.action_queue_cost(game_state))+ 20) and (
                             not adjacent_to_heavy_bot) and unit.cargo.ice == 0:
-                        direction = direction_to(unit.pos, closest_heavy_bot_tile)
+                        direction = direction_to(unit.pos, closest_ice_tile)
                         move_cost = unit.move_cost(game_state, direction)
-                        actions[unit_id] = [unit.move(direction, repeat=0, n=1)]
+                        if move_cost is not None and unit.power >= move_cost + unit.action_queue_cost(game_state):
+                            actions[unit_id] = [unit.move(direction, repeat=0, n=1)]
 
                     elif (move_cost is not None) and (unit.power <= (
-                            move_cost + unit.action_queue_cost(game_state) + 10 )) and not adjacent_to_factory:
+                            move_cost + unit.action_queue_cost(game_state) + 20 )) and not adjacent_to_factory:
                         direction = direction_to(unit.pos, closest_factory_tile)
                         move_cost = unit.move_cost(game_state, direction)
                         if move_cost is not None and unit.power >= move_cost + unit.action_queue_cost(game_state):
@@ -165,10 +181,9 @@ class Agent():
                             np.all(actions[closest_heavy_bot.unit_id][0] == unit.dig(repeat=0, n=1)))) or
                              closest_heavy_bot.unit_id not in actions.keys()):
                         actions[unit_id] = [unit.transfer(direction_to(unit.pos, closest_heavy_bot_tile), 4,
-                                                          (unit.power - move_cost - unit.action_queue_cost(game_state) - 10),
+                                                          (unit.power - move_cost - unit.action_queue_cost(game_state) - 20),
                                                           repeat=0, n=1)]
-                    elif adjacent_to_factory and unit.power <= 40:
-                        actions[unit_id] = [unit.pickup(4, 100-unit.power, repeat=0, n=1)]
+
                     elif adjacent_to_factory and unit.cargo.ice != 0 :
                         actions[unit_id] = [unit.transfer(direction_to(unit.pos, closest_factory_tile), 0,
                                                           unit.cargo.ice,
@@ -176,3 +191,14 @@ class Agent():
 
 
         return actions
+
+
+def is_occupied(heavy_bot_tiles, light_bot_tiles, pos):
+    for tiles in heavy_bot_tiles:
+        if np.all(pos == tiles):
+            return True
+    for tiles in light_bot_tiles:
+        if np.all(pos == tiles):
+            return True
+    return False
+
