@@ -32,7 +32,7 @@ class Agent():
             if factories_to_place > 0 and my_turn_to_place:
                 # we will spawn our factory in a random location with 150 metal and water if it is our turn to place
                 potential_spawns = np.array(list(zip(*np.where(obs["board"]["valid_spawns_mask"] == 1))))
-                spawn_loc = potential_spawns[np.random.randint(0, len(potential_spawns))]
+                spawn_loc = self.factory_placement(obs)
                 return dict(spawn=spawn_loc, metal=150, water=150)
             return dict()
 
@@ -118,12 +118,9 @@ class Agent():
     def get_lightBot_action(self, game_state, my_obs):
         actions = dict()
         for lightBot in my_obs.light_bot_units:
-            # if lightBot.unit_id == "unit_17":
-            #     print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~", file=sys.stderr)
-            #     print(lightBot.pos, file=sys.stderr)
-            #     print(my_obs.is_adjacent_to_light_bot(lightBot.pos), file=sys.stderr)
-            #     print(my_obs.get_closest_light_bot_tile(lightBot.pos), file=sys.stderr)
-            #     print(my_obs.light_bot_tiles, file=sys.stderr)
+            unit_num = int(lightBot.unit_id.split("_")[1])
+            if unit_num % 2 == 0:
+                return
             if my_obs.is_at_factory(lightBot.pos) and lightBot.power <= 140:
                 actions[lightBot.unit_id] = [lightBot.pickup(4, 150 - lightBot.power, repeat=0, n=1)]
                 continue
@@ -137,17 +134,6 @@ class Agent():
                     actions[lightBot.unit_id] = [lightBot.move(direction, repeat=0, n=1)]
                     my_obs.unit_moving_to(lightBot, direction)
                     continue
-
-            # if my_obs.is_adjacent_to_light_bot(lightBot.pos) and lightBot.power > 40:
-            #     if lightBot.power > my_obs.get_closest_light_bot(lightBot.pos).power:
-            #         direction = direction_to(lightBot.pos, my_obs.get_closest_light_bot_tile(lightBot.pos))
-            #         actions[lightBot.unit_id] = [lightBot.transfer(direction, 4, 50, repeat=0, n=1)]
-            #     continue
-            #
-            # if my_obs.is_adjacent_to_light_bot(lightBot.pos) and lightBot.power <= 40:
-            #     # direction = direction_to(lightBot.pos, my_obs.get_closest_light_bot_tile(lightBot.pos))
-            #     # actions[lightBot.unit_id] = [lightBot.transfer(direction, 0, lightBot.cargo.ice, repeat=0, n=1)]
-            #     continue
 
             if my_obs.is_adjacent_to_heavy_bot(lightBot.pos) and lightBot.power > 40:
                 if not my_obs.is_unit_moving(my_obs.get_closest_heavy_bot(lightBot.pos)):
@@ -171,6 +157,29 @@ class Agent():
                     my_obs.unit_moving_to(lightBot, direction)
                 continue
         return actions
+
+    def factory_placement(self, obs):
+        potential_spawns = list(zip(*np.where(obs["board"]["valid_spawns_mask"] == 1)))
+        potential_spawns_set = set(potential_spawns)
+
+        ice_diff = np.diff(obs["board"]["ice"])
+        pot_ice_spots = np.argwhere(ice_diff == 1)
+        if len(pot_ice_spots) == 0:
+            pot_ice_spots = potential_spawns
+        trials = 100
+        while trials > 0:
+            pos_idx = np.random.randint(0, len(pot_ice_spots))
+            pos = pot_ice_spots[pos_idx]
+            area = 3
+            for x in range(area):
+                for y in range(area):
+                    check_pos = [pos[0] + x - area // 2, pos[1] + y - area // 2]
+                    if tuple(check_pos) in potential_spawns_set:
+                        pos = check_pos
+                        return pos
+            trials -= 1
+        spawn_loc = potential_spawns[np.random.randint(0, len(potential_spawns))]
+        return spawn_loc
 
 
 def merge(dict1, dict2, dict3):
